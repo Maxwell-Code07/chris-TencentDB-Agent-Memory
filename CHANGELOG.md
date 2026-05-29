@@ -4,6 +4,60 @@
 
 ---
 
+## [1.0.0-beta.1] - 2026-05-29
+
+> **架构大版本**：从 OpenClaw 专属插件演进为**面向所有 Agent 的通用记忆服务**。核心能力通过独立 Gateway 服务 + 标准化 v2 HTTP API 对外暴露，配套官方 TypeScript / Python SDK，任何 Agent 框架均可接入完整的多层记忆管线。
+
+### ⚠️ Breaking Changes
+
+- **客户端/服务端架构拆分**：记忆引擎从 OpenClaw 嵌入式插件拆分为独立 Gateway 服务进程，部署方式与接入方式发生变化。
+- **配置结构变更**：插件配置结构扁平化重构，原 `gateway` 字段迁移为 `server` 嵌套；Offload 路径从 `/api/v1` 变更为 `/offload/v1`。
+
+### ✨ 新功能
+
+#### 独立 Gateway 服务（v2 API）
+
+记忆能力不再绑定 OpenClaw 宿主，以独立服务形式运行，通过 v2 HTTP API 为任意 Agent 提供记忆读写与管线管理：
+
+- **完整 v2 API**：14 条标准路由覆盖记忆 CRUD、原子更新、场景索引、管线状态查询等全部操作。
+- **管线状态查询（`/v2/pipeline/status`）**：实时获取 L1/L2/L3 各阶段运行状态与进度。
+- **实例生命周期管理（`/v2/instance/destroy`）**：支持外部系统主动创建/销毁记忆实例。
+- **可选 Bearer 鉴权 + CORS 白名单**：保护对外暴露的 API 安全。
+- **请求体大小限制**：强制 1 MiB 上限，防止异常请求。
+
+#### 官方 SDK
+
+- **TypeScript SDK 1.0.0**（`@tencentdb-agent-memory/memory-sdk-ts`）：类型安全，覆盖全部 v2 API，npm 安装即用。
+- **Python SDK**（`tencentdb-agent-memory-sdk-python`）：pip wheel 安装，同步/异步双模式，适配主流 Python Agent 框架。
+
+#### 通用 Agent 框架适配
+
+- **OpenClaw 插件适配**：通过 client plugin 接入 Gateway 服务，保持原有开发体验。
+- **Hermes Agent 适配**：`memory_tencentdb_v2` adapter，支持 Hermes 框架多租户场景。
+- **通用接入**：任何能发 HTTP 请求的 Agent（LangChain、AutoGPT、自研框架等）均可通过 SDK 或裸 API 接入。
+
+#### 可观测性
+
+- **OpenTelemetry 全链路 Trace**：支持 OTLP 协议上报，可对接 Jaeger / Grafana Tempo 等后端。
+- **Langfuse 集成**：仅转发 LLM 相关 span，适合评估记忆提取质量。
+- **管线评测指标**：L1 提取率、去重决策分布、各阶段 token 消耗、recall 延迟等。
+
+#### 部署
+
+- **Standalone Docker 镜像**：单容器即可运行完整记忆服务，无需外部依赖。
+- **Hermes + Memory All-in-One 镜像**：Agent + 记忆服务一体化部署方案。
+- **`memory-tencentdb-ctl` CLI**：运维命令行工具，支持配置管理、存储引擎切换等操作。
+- **v2 安装器脚本**：`install-openclaw-plugin-v2.sh`，一键配置插件适配层。
+
+### 📖 文档
+
+- SDK 接入指南（TypeScript / Python 示例）。
+- Gateway 独立部署文档。
+- OpenClaw / Hermes 插件安装说明。
+- Docker 部署与配置参考。
+
+---
+
 ## [0.3.6] - 2026-05-27
 
 ### ✨ 新功能

@@ -63,9 +63,38 @@ TDAI_MEMORY_ENDPOINT="${TDAI_MEMORY_ENDPOINT:-http://127.0.0.1:8420}"
 TDAI_MEMORY_API_KEY="${TDAI_MEMORY_API_KEY:-local}"
 TDAI_MEMORY_SERVICE_ID="${TDAI_MEMORY_SERVICE_ID:-default}"
 WRITE_HERMES_ENV="${WRITE_HERMES_ENV:-1}"
+WRITE_HERMES_CONFIG="${WRITE_HERMES_CONFIG:-1}"
 
 need_cmd curl
 need_cmd "$PYTHON_BIN"
+
+ensure_pip() {
+  if "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
+    return
+  fi
+
+  log "pip not found in selected Hermes Python; trying ensurepip: $PYTHON_BIN"
+  if "$PYTHON_BIN" -m ensurepip --upgrade; then
+    "$PYTHON_BIN" -m pip --version >/dev/null 2>&1 || fail "ensurepip completed but pip is still unavailable for $PYTHON_BIN"
+    return
+  fi
+
+  cat >&2 <<EOF
+[install-hermes-plugin-v2][ERROR] pip is not available in the selected Hermes Python:
+  $PYTHON_BIN
+
+Fix options:
+  1. Install pip into that Hermes venv and rerun:
+     $PYTHON_BIN -m ensurepip --upgrade
+
+  2. If ensurepip is unavailable on Ubuntu/Debian, install venv support and recreate/fix the Hermes venv:
+     sudo apt-get update && sudo apt-get install -y python3-venv python3-pip
+
+  3. Or explicitly point this installer to the Python that Hermes actually uses:
+     PYTHON_BIN=/path/to/hermes/python bash scripts/install-hermes-plugin-v2.sh
+EOF
+  exit 1
+}
 
 if [[ ! -d "$PROVIDER_SRC" ]]; then
   fail "Hermes provider directory not found: $PROVIDER_SRC"
@@ -75,6 +104,8 @@ if [[ ! -d "$HERMES_AGENT_DIR" ]]; then
   log "WARN: Hermes agent dir not found: $HERMES_AGENT_DIR"
   log "      Set HERMES_AGENT_DIR if Hermes is installed elsewhere."
 fi
+
+ensure_pip
 
 log "Downloading Python SDK wheel"
 TMP_DIR="$(mktemp -d)"
@@ -98,25 +129,84 @@ ln -s "$PROVIDER_SRC" "$PROVIDER_TARGET"
 log "Provider linked: $PROVIDER_TARGET -> $PROVIDER_SRC"
 
 log "Checking Hermes config"
-if [[ -f "$HERMES_CONFIG" ]]; then
-  if sed -n '/^memory:/,/^[[:alpha:]_][[:alnum:]_]*:/p' "$HERMES_CONFIG" | grep -q 'provider: memory_tencentdb_v2'; then
+if [[ "$WRITE_HERMES_CONFIG" == "1" ]]; then
+  log "Enabling memory.provider=memory_tencentdb_v2 in $HERMES_CONFIG"
+  mkdir -p "$(dirname "$HERMES_CONFIG")"
+  if [[ -f "$HERMES_CONFIG" ]]; then
+    cp "$HERMES_CONFIG" "$HERMES_CONFIG.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+
+  HERMES_CONFIG="$HERMES_CONFIG" "$PYTHON_BIN" <<'PY'
+import os
+import re
+from pathlib import Path
+
+path = Path(os.environ["HERMES_CONFIG"])
+provider_line = "  provider: memory_tencentdb_v2"
+
+
+def update_with_pyyaml(text: str) -> str:
+    import yaml
+    data = yaml.safe_load(text) if text.strip() else {}
+    if not isinstance(data, dict):
+        data = {}
+    memory = data.get("memory")
+    if not isinstance(memory, dict):
+        memory = {}
+    data["memory"] = memory
+    memory["provider"] = "memory_tencentdb_v2"
+    return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+
+
+def update_minimal(text: str) -> str:
+    lines = text.splitlines()
+    memory_start = None
+    memory_end = None
+    for i, line in enumerate(lines):
+        if re.match(r"^memory\s*:\s*(#.*)?$", line):
+            memory_start = i
+            memory_end = len(lines)
+            for j in range(i + 1, len(lines)):
+                if lines[j] and not lines[j].startswith((" ", "\t")):
+                    memory_end = j
+                    break
+            break
+
+    if memory_start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(["memory:", provider_line])
+        return "\n".join(lines) + "\n"
+
+    for i in range(memory_start + 1, memory_end):
+        if re.match(r"^\s*provider\s*:", lines[i]):
+            indent = re.match(r"^(\s*)", lines[i]).group(1) or "  "
+            lines[i] = f"{indent}provider: memory_tencentdb_v2"
+            return "\n".join(lines) + "\n"
+
+    insert_at = memory_start + 1
+    lines.insert(insert_at, provider_line)
+    return "\n".join(lines) + "\n"
+
+
+text = path.read_text() if path.exists() else ""
+try:
+    updated = update_with_pyyaml(text)
+except Exception:
+    updated = update_minimal(text)
+path.write_text(updated)
+PY
+else
+  if [[ -f "$HERMES_CONFIG" ]] && sed -n '/^memory:/,/^[[:alpha:]_][[:alnum:]_]*:/p' "$HERMES_CONFIG" | grep -q 'provider: memory_tencentdb_v2'; then
     log "memory.provider already set to memory_tencentdb_v2"
   else
-    log "Provider installed but NOT enabled by default. Add/edit in $HERMES_CONFIG:"
+    log "Provider installed but NOT enabled because WRITE_HERMES_CONFIG=$WRITE_HERMES_CONFIG. Add/edit in $HERMES_CONFIG:"
     cat >&2 <<'EOF'
 
 memory:
   provider: memory_tencentdb_v2
 EOF
   fi
-else
-  log "WARN: $HERMES_CONFIG not found; create it or run Hermes installer first."
-  log "      To enable the provider, add:"
-  cat >&2 <<'EOF'
-
-memory:
-  provider: memory_tencentdb_v2
-EOF
 fi
 
 _update_env() {
@@ -151,10 +241,9 @@ Provider installed at:
 SDK env file:
   $HERMES_ENV
 
-If not already enabled, add this to $HERMES_CONFIG:
-
-memory:
-  provider: memory_tencentdb_v2
+Hermes config:
+  $HERMES_CONFIG
+  memory.provider = memory_tencentdb_v2
 
 Standalone Gateway env:
   TDAI_MEMORY_ENDPOINT="$TDAI_MEMORY_ENDPOINT"
