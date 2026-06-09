@@ -1,3 +1,4 @@
+
 <div align="center">
 
 <img src="./assets/images/logo.png" alt="TencentDB Agent Memory" width="880" />
@@ -125,6 +126,54 @@ graph LR
 docker pull agentmemory/hermes-memory:1.0.0-beta
 docker pull agentmemory/openclaw-memory:1.0.0-beta
 ```
+
+### 1.2 零配置启用
+
+默认使用本地 `SQLite + sqlite-vec` 后端。
+
+```jsonc
+// ~/.openclaw/openclaw.json
+{
+  "memory-tencentdb": {
+    "enabled": true
+  }
+}
+```
+
+启用后，TencentDB Agent Memory 会自动完成对话录制、记忆提取、场景归纳、用户画像生成和下一轮对话前召回。
+
+
+### 1.3 启用短期记忆压缩（可选，要求版本 ≥ 0.3.4）
+
+```jsonc
+{
+  "memory-tencentdb": {
+    "config": {
+      "offload": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+#### 步骤 1 —— 在插件配置中注册 slot
+
+在 `slots` 字段中声明 `contextEngine`，让 OpenClaw 把上下文卸载请求路由到本插件：
+
+```jsonc
+{
+  "plugins": {
+    "slots": {
+      "contextEngine": "memory-tencentdb"
+    }
+  }
+}
+```
+
+#### 步骤 2 —— 执行 patch 脚本
+
+为保证最佳效果，请执行以下 patch 脚本。该脚本会注入 `after-tool-call` 消息钩子，让工具调用结果能被正确卸载与回溯：
 
 #### Hermes + Memory（standalone）
 

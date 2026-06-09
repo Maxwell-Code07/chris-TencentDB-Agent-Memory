@@ -58,6 +58,28 @@ console.log(core.content);
 // L3: 写入核心记忆
 await client.writeCore({ content: "# User Profile\n..." });
 
+// Offload v2: 上报工具调用对，触发服务端 L1 异步处理（fire-and-forget）
+await client.offloadIngest({
+  session_id: "agent_sess_123",
+  tool_pairs: [
+    { tool_name: "search", tool_call_id: "call_1", params: { q: "..." }, result: "...", timestamp: "..." },
+  ],
+});
+
+// Offload v2: 服务端上下文压缩（同步等待结果）
+const compacted = await client.offloadCompact({
+  session_id: "agent_sess_123",
+  messages: [...],
+  ratio: 0.7,
+  context_window: 128000,
+  total_tokens: 160000,
+});
+console.log(compacted.messages, compacted.report);
+
+// Offload v2: 查询任务流程图（MMD）
+const mmd = await client.offloadQueryMmd({ session_id: "agent_sess_123", limit: 1 });
+console.log(mmd.current_mmd, mmd.mmds);
+
 // 读取记忆 pipeline 产物（如 persona.md、scene_blocks/*.md）
 const raw = await client.readFile("scene_blocks/工作.md");
 ```
@@ -80,6 +102,9 @@ const raw = await client.readFile("scene_blocks/工作.md");
 | L2 | `rmScenario()` | `POST /v2/scenario/rm` |
 | L3 | `readCore()` | `POST /v2/core/read` |
 | L3 | `writeCore()` | `POST /v2/core/write` |
+| Offload | `offloadIngest()` | `POST /v2/offload/ingest` |
+| Offload | `offloadCompact()` | `POST /v2/offload/compact` |
+| Offload | `offloadQueryMmd()` | `POST /v2/offload/query-mmd` |
 
 ## 错误处理
 

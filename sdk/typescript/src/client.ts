@@ -25,6 +25,12 @@ import type {
   CoreFile,
   CoreWriteData,
   CoreWriteRequest,
+  OffloadCompactData,
+  OffloadCompactRequest,
+  OffloadIngestData,
+  OffloadIngestRequest,
+  OffloadQueryMmdData,
+  OffloadQueryMmdRequest,
   ScenarioFile,
   ScenarioListData,
   ScenarioListRequest,
@@ -146,6 +152,32 @@ export class MemoryClient {
 
   writeCore(params: CoreWriteRequest): Promise<CoreWriteData> {
     return this.http.post(`${V2}/core/write`, params as unknown as Record<string, unknown>);
+  }
+
+  // -- Offload (Compaction + Ingest) ------------------------------------
+
+  /**
+   * Send tool pairs (+ optional context) to offload server for L1 processing.
+   * Fire-and-forget usage: caller can `.catch()` without blocking.
+   */
+  offloadIngest(params: OffloadIngestRequest): Promise<OffloadIngestData> {
+    return this.http.post(`${V2}/offload/ingest`, stripUndefined(params as unknown as Record<string, unknown>));
+  }
+
+  /**
+   * Request server-side context compaction.
+   * Returns compacted messages + report, or throws on failure.
+   */
+  offloadCompact(params: OffloadCompactRequest): Promise<OffloadCompactData> {
+    return this.http.post(`${V2}/offload/compact`, stripUndefined(params as unknown as Record<string, unknown>));
+  }
+
+  /**
+   * Query MMD task graphs for a session.
+   * limit=1 returns only the current active MMD (fast path).
+   */
+  offloadQueryMmd(params: OffloadQueryMmdRequest): Promise<OffloadQueryMmdData> {
+    return this.http.post(`${V2}/offload/query-mmd`, stripUndefined(params as unknown as Record<string, unknown>));
   }
 
   // -- File read (memory pipeline artifacts) ----------------------------

@@ -63,6 +63,23 @@ print(core["content"])
 # L3: 写入核心记忆
 client.write_core("# User Profile\n...")
 
+# Offload v2: 上报工具调用对，触发服务端 L1 异步处理（可 fire-and-forget）
+client.offload_ingest(
+    session_id="agent_sess_123",
+    tool_pairs=[
+        {"tool_name": "search", "tool_call_id": "call_1", "params": {"q": "..."}, "result": "...", "timestamp": "..."},
+    ],
+)
+
+# Offload v2: 服务端上下文压缩（同步等待结果）
+compacted = client.offload_compact(
+    session_id="agent_sess_123",
+    messages=[...],
+    ratio=0.7,
+    context_window=128000,
+)
+print(compacted["messages"], compacted["report"])
+
 # 读取记忆 pipeline 产物（如 persona.md、scene_blocks/*.md）
 raw = client.read_file("scene_blocks/工作.md")
 ```
@@ -103,6 +120,9 @@ asyncio.run(main())
 | L2 | `rm_scenario()` | `POST /v2/scenario/rm` |
 | L3 | `read_core()` | `POST /v2/core/read` |
 | L3 | `write_core()` | `POST /v2/core/write` |
+| Offload | `offload_ingest()` | `POST /v2/offload/ingest` |
+| Offload | `offload_compact()` | `POST /v2/offload/compact` |
+| Offload | `offload_query_mmd()` | `POST /v2/offload/query-mmd` |
 
 ## 错误处理
 

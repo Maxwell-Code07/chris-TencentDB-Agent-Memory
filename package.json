@@ -1,6 +1,6 @@
 {
   "name": "@tencentdb-agent-memory/memory-tencentdb",
-  "version": "1.0.0-beta.1",
+  "version": "1.0.0",
   "description": "Four-layer local memory system plugin for OpenClaw — auto-captures, structures, and profiles conversational knowledge using local LLM + SQLite vector search (L0→L1→L2→L3 pipeline)",
   "type": "module",
   "main": "./dist/index.mjs",
@@ -45,11 +45,14 @@
     "scripts/read-local-memory/dist/",
     "scripts/memory-tencentdb-ctl.sh",
     "scripts/install_hermes_memory_tencentdb.sh",
+    "scripts/install-hermes-plugin-v2.sh",
+    "scripts/install-openclaw-plugin-v2.sh",
     "scripts/README.memory-tencentdb-ctl.md",
     "src",
     "scripts/openclaw-after-tool-call-messages.patch.sh",
     "scripts/setup-offload.sh",
     "hermes-plugin/",
+    "openclaw-plugin/",
     "openclaw.plugin.json",
     "README.md",
     "CHANGELOG.md",
@@ -90,6 +93,7 @@
     "@opentelemetry/sdk-node": "^0.218.0",
     "@opentelemetry/sdk-trace-base": "^2.7.1",
     "@opentelemetry/semantic-conventions": "^1.41.1",
+    "@tencentdb-agent-memory/memory-sdk-ts": "^1.0.0",
     "@tencentdb-agent-memory/tcvdb-text": "^0.1.1",
     "ai": "^6.0.164",
     "crc-32": "^1.2.2",
@@ -110,7 +114,7 @@
     "cos-nodejs-sdk-v5": "^2.15.4",
     "ioredis": "^5.10.1",
     "kafkajs": "^2.2.4",
-    "opik": "^1.0.0"
+    "opik": "^1.11.14"
   },
   "peerDependencies": {
     "node-llama-cpp": "^3.16.2",

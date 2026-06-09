@@ -21,6 +21,7 @@ import type { EmbeddingService, EmbeddingCallOptions } from "../store/embedding.
 import { sanitizeText } from "../../utils/sanitize.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
+import type { Logger } from "../types.js";
 
 const TAG = "[memory-tdai] [recall]";
 const RECALL_TRUNCATION_SUFFIX = "…（已截断；可用 tdai_memory_search 或 tdai_conversation_search 查看详情）";
@@ -45,13 +46,6 @@ const MEMORY_TOOLS_GUIDE = `<memory-tools-guide>
 - 首次搜索无结果时，可换关键词或换工具重试，但总调用次数不要超过 3 次。
 - 若 3 次搜索后仍无结果，说明该信息不在记忆中，请直接根据已有信息回复用户，不要继续搜索。
 </memory-tools-guide>`
-
-interface Logger {
-  debug?: (message: string) => void;
-  info: (message: string) => void;
-  warn: (message: string) => void;
-  error: (message: string) => void;
-}
 
 /** A single recalled L1 memory with its search score and type. */
 export interface RecalledMemory {
@@ -890,11 +884,15 @@ function normalizeBudgetLimit(value: number | undefined): number | undefined {
 }
 
 function truncateRecallLine(line: string, maxChars: number): string {
-  if (line.length <= maxChars) return line;
+  // Count and slice by code point, not UTF-16 code unit, so a cut never lands
+  // between the halves of a surrogate pair (which would corrupt a non-BMP
+  // character to U+FFFD when the line is UTF-8 encoded for the request).
+  const cps = Array.from(line);
+  if (cps.length <= maxChars) return line;
   if (maxChars <= RECALL_TRUNCATION_SUFFIX.length) {
-    return line.slice(0, maxChars);
+    return cps.slice(0, maxChars).join("");
   }
-  return `${line.slice(0, maxChars - RECALL_TRUNCATION_SUFFIX.length).trimEnd()}${RECALL_TRUNCATION_SUFFIX}`;
+  return `${cps.slice(0, maxChars - RECALL_TRUNCATION_SUFFIX.length).join("").trimEnd()}${RECALL_TRUNCATION_SUFFIX}`;
 }
 
 /**

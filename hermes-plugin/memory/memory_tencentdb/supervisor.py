@@ -8,12 +8,22 @@ On shutdown(), sends a flush signal and waits for clean exit.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import re
 import shlex
+import signal
 import subprocess
+import tempfile
+import threading
 import time
-from typing import IO, Optional
+from typing import Dict, IO, Iterator, Optional
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None  # type: ignore[assignment]
 
 from .client import MemoryTencentdbSdkClient
 
@@ -30,6 +40,39 @@ HEALTH_CHECK_RETRIES = 3     # retries for is_running check
 
 # Log file rotation parameters
 LOG_TAIL_BYTES_ON_CRASH = 2048  # bytes of stderr log to surface on startup crash
+
+# Startup single-flight state. The thread lock prevents multiple supervisor
+# instances in the same Python process from spawning the same Gateway
+# concurrently; the optional fcntl lock extends the guard across processes.
+_START_LOCKS: Dict[str, threading.Lock] = {}
+_START_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_key(host: str, port: int) -> str:
+    safe_host = re.sub(r"[^A-Za-z0-9_.-]", "_", host)
+    return f"{safe_host}-{port}"
+
+
+@contextlib.contextmanager
+def _startup_singleflight(host: str, port: int) -> Iterator[None]:
+    key = _lock_key(host, port)
+    with _START_LOCKS_GUARD:
+        thread_lock = _START_LOCKS.setdefault(key, threading.Lock())
+
+    lock_path = os.path.join(tempfile.gettempdir(), f"memory-tencentdb-gateway-{key}.lock")
+    with thread_lock:
+        lock_file = None
+        try:
+            if fcntl is not None:
+                lock_file = open(lock_path, "a", encoding="utf-8")
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            if lock_file is not None:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                finally:
+                    lock_file.close()
 
 
 class GatewaySupervisor:
@@ -76,6 +119,7 @@ class GatewaySupervisor:
         self._stdout_log: Optional[IO[bytes]] = None
         self._stderr_log: Optional[IO[bytes]] = None
         self._stderr_log_path: Optional[str] = None
+        self._shutdown_requested = False
 
         # Resolve Gateway command
         # Priority: explicit arg > MEMORY_TENCENTDB_GATEWAY_CMD env
@@ -146,77 +190,96 @@ class GatewaySupervisor:
             logger.info("memory-tencentdb Gateway already running at %s", self._base_url)
             return True
 
-        # If we previously spawned a child and it has since died, drop the
-        # stale Popen handle so the new spawn below isn't shadowed by a
-        # zombie reference. Without this, a crashed-then-respawned Gateway
-        # would keep ``self._process`` pointing at the dead PID forever and
-        # ``is_process_alive()`` would mislead the watchdog.
-        self._reap_dead_process()
-
-        # Try to start the Gateway
-        if not self._gateway_cmd:
-            logger.warning(
-                "memory-tencentdb Gateway is not running and no gateway command configured. "
-                "Set MEMORY_TENCENTDB_GATEWAY_CMD environment variable or pass gateway_cmd to supervisor. "
-                "memory-tencentdb memory will be unavailable."
-            )
-            return False
-
-        logger.info("Starting memory-tencentdb Gateway: %s", self._gateway_cmd)
-
-        try:
-            env = os.environ.copy()
-            env["MEMORY_TENCENTDB_GATEWAY_PORT"] = str(self._port)
-            env["MEMORY_TENCENTDB_GATEWAY_HOST"] = self._host
-            # Note: we deliberately do NOT inject TDAI_GATEWAY_API_KEY into
-            # the child's env from here. Whether the Gateway enforces auth is
-            # the operator's call — they configure it on the Gateway side
-            # (env, yaml, docker run, systemd unit) just like any other
-            # Gateway setting. The supervisor's ``api_key`` is purely the
-            # client-side Bearer token used for outbound requests.
-
-            # Redirect child stdout/stderr to log files instead of PIPE.
-            # Using PIPE without an active reader will deadlock the child once
-            # the pipe buffer (~64 KB) fills up. A log directory next to the
-            # data dir keeps logs inspectable on crash while eliminating the
-            # blocking risk entirely.
-            log_dir = self._resolve_log_dir()
-            try:
-                os.makedirs(log_dir, exist_ok=True)
-            except OSError as e:
-                logger.warning(
-                    "memory-tencentdb Gateway: failed to create log dir %s (%s); "
-                    "falling back to DEVNULL", log_dir, e,
+        with _startup_singleflight(self._host, self._port):
+            # Another supervisor may have started the Gateway while we were
+            # waiting on the single-flight lock. Re-probe before spawning.
+            if self.is_running():
+                logger.info(
+                    "memory-tencentdb Gateway became available at %s while waiting for startup lock",
+                    self._base_url,
                 )
-                log_dir = None
+                return True
 
-            if log_dir is not None:
-                stdout_path = os.path.join(log_dir, "gateway.stdout.log")
-                stderr_path = os.path.join(log_dir, "gateway.stderr.log")
-                # Append mode: preserve previous runs for postmortem.
-                self._stdout_log = open(stdout_path, "ab", buffering=0)
-                self._stderr_log = open(stderr_path, "ab", buffering=0)
-                self._stderr_log_path = stderr_path
-                stdout_target: object = self._stdout_log
-                stderr_target: object = self._stderr_log
-            else:
-                stdout_target = subprocess.DEVNULL
-                stderr_target = subprocess.DEVNULL
+            # If we previously spawned a child and it has since died, drop the
+            # stale Popen handle so the new spawn below isn't shadowed by a
+            # zombie reference. Without this, a crashed-then-respawned Gateway
+            # would keep ``self._process`` pointing at the dead PID forever and
+            # ``is_process_alive()`` would mislead the watchdog.
+            self._reap_dead_process()
 
-            self._process = subprocess.Popen(
-                shlex.split(self._gateway_cmd),
-                env=env,
-                stdout=stdout_target,
-                stderr=stderr_target,
-                start_new_session=True,  # Detach from parent process group
-            )
-        except Exception as e:
-            logger.error("Failed to start memory-tencentdb Gateway: %s", e)
-            self._close_log_handles()
-            return False
+            # Try to start the Gateway
+            if not self._gateway_cmd:
+                logger.warning(
+                    "memory-tencentdb Gateway is not running and no gateway command configured. "
+                    "Set MEMORY_TENCENTDB_GATEWAY_CMD environment variable or pass gateway_cmd to supervisor. "
+                    "memory-tencentdb memory will be unavailable."
+                )
+                return False
 
-        # Wait for health check
-        return self._wait_for_health()
+            logger.info("Starting memory-tencentdb Gateway: %s", self._gateway_cmd)
+            self._shutdown_requested = False
+
+            try:
+                env = os.environ.copy()
+                # The Python provider historically used MEMORY_TENCENTDB_* while
+                # src/gateway/config.ts reads TDAI_GATEWAY_*. Export both so a
+                # non-default supervisor port cannot accidentally spawn a child
+                # that still binds the default 8420.
+                env["MEMORY_TENCENTDB_GATEWAY_PORT"] = str(self._port)
+                env["MEMORY_TENCENTDB_GATEWAY_HOST"] = self._host
+                env["TDAI_GATEWAY_PORT"] = str(self._port)
+                env["TDAI_GATEWAY_HOST"] = self._host
+                # Note: we deliberately do NOT inject TDAI_GATEWAY_API_KEY into
+                # the child's env from here. Whether the Gateway enforces auth is
+                # the operator's call — they configure it on the Gateway side
+                # (env, yaml, docker run, systemd unit) just like any other
+                # Gateway setting. The supervisor's ``api_key`` is purely the
+                # client-side Bearer token used for outbound requests.
+
+                # Redirect child stdout/stderr to log files instead of PIPE.
+                # Using PIPE without an active reader will deadlock the child once
+                # the pipe buffer (~64 KB) fills up. A log directory next to the
+                # data dir keeps logs inspectable on crash while eliminating the
+                # blocking risk entirely.
+                log_dir = self._resolve_log_dir()
+                try:
+                    os.makedirs(log_dir, exist_ok=True)
+                except OSError as e:
+                    logger.warning(
+                        "memory-tencentdb Gateway: failed to create log dir %s (%s); "
+                        "falling back to DEVNULL", log_dir, e,
+                    )
+                    log_dir = None
+
+                if log_dir is not None:
+                    stdout_path = os.path.join(log_dir, "gateway.stdout.log")
+                    stderr_path = os.path.join(log_dir, "gateway.stderr.log")
+                    # Append mode: preserve previous runs for postmortem.
+                    self._stdout_log = open(stdout_path, "ab", buffering=0)
+                    self._stderr_log = open(stderr_path, "ab", buffering=0)
+                    self._stderr_log_path = stderr_path
+                    stdout_target: object = self._stdout_log
+                    stderr_target: object = self._stderr_log
+                else:
+                    stdout_target = subprocess.DEVNULL
+                    stderr_target = subprocess.DEVNULL
+
+                self._process = subprocess.Popen(
+                    shlex.split(self._gateway_cmd),
+                    env=env,
+                    stdout=stdout_target,
+                    stderr=stderr_target,
+                    start_new_session=True,
+                )
+            except Exception as e:
+                logger.error("Failed to start memory-tencentdb Gateway: %s", e)
+                self._close_log_handles()
+                return False
+
+            # Keep the lock until the spawned process becomes healthy; otherwise
+            # a second waiter can observe the port as down during cold start and
+            # launch a duplicate process that immediately hits EADDRINUSE.
+            return self._wait_for_health()
 
     def _resolve_log_dir(self) -> str:
         """Pick a directory to store Gateway stdout/stderr logs.
@@ -269,6 +332,10 @@ class GatewaySupervisor:
         """Wait for the Gateway to become healthy."""
         start = time.monotonic()
         while time.monotonic() - start < HEALTH_CHECK_MAX_WAIT:
+            if self._shutdown_requested:
+                logger.info("memory-tencentdb Gateway startup wait cancelled by shutdown")
+                return False
+
             # Check if process died
             if self._process and self._process.poll() is not None:
                 rc = self._process.returncode
@@ -303,20 +370,32 @@ class GatewaySupervisor:
 
     def shutdown(self) -> None:
         """Shut down the managed Gateway process (if we started it)."""
+        self._shutdown_requested = True
         if self._process is None:
             return
 
         logger.info("Shutting down memory-tencentdb Gateway...")
 
         try:
-            # Send SIGTERM for graceful shutdown
-            self._process.terminate()
+            proc = self._process
+            if proc.poll() is None:
+                # The Gateway is started with start_new_session=True. Terminate
+                # the whole process group so `pnpm -> tsx -> node server.ts`
+                # does not leave the real listener orphaned after the top-level
+                # wrapper exits.
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except Exception:
+                    proc.terminate()
             try:
-                self._process.wait(timeout=10)
+                proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 logger.warning("memory-tencentdb Gateway did not exit in 10s, sending SIGKILL")
-                self._process.kill()
-                self._process.wait(timeout=5)
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:
+                    proc.kill()
+                proc.wait(timeout=5)
         except Exception as e:
             logger.warning("Error shutting down memory-tencentdb Gateway: %s", e)
         finally:

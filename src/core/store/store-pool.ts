@@ -16,6 +16,7 @@
  */
 
 import path from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
 import type { MemoryTdaiConfig } from "../../config.js";
 import type { IMemoryStore, StoreLogger } from "./types.js";
 import type { EmbeddingService } from "./embedding.js";
@@ -303,6 +304,11 @@ export class StorePool {
 
     const dims = embCfg.dimensions ?? 0;
     const dbPath = this.getSqlitePath(instanceId);
+    // 确保数据库目录存在（对于非 default instance）
+    const dbDir = path.dirname(dbPath);
+    if (!existsSync(dbDir)) {
+      mkdirSync(dbDir, { recursive: true });
+    }
     const store = new VectorStore(dbPath, dims, this.logger as StoreLogger);
 
     return {

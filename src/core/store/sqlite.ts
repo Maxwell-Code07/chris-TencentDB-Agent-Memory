@@ -21,6 +21,8 @@
  */
 
 import { createRequire } from "node:module";
+import { mkdirSync, existsSync } from "node:fs";
+import path from "node:path";
 import type { DatabaseSync, StatementSync, SQLInputValue } from "node:sqlite";
 import type { MemoryRecord } from "../record/l1-writer.js";
 import type { EmbeddingProviderInfo } from "./embedding.js";
@@ -40,6 +42,9 @@ import type {
   L1PaginatedFilter,
   L1PaginatedResult,
 } from "./types.js";
+import type { Logger } from "../types.js";
+
+export type { L1RecordRow } from "./types.js";
 
 // ============================
 // Types
@@ -84,13 +89,6 @@ export interface L0RecordRow {
   message_text: string;
   recorded_at: string;
   timestamp: number;
-}
-
-interface Logger {
-  debug?: (message: string) => void;
-  info: (message: string) => void;
-  warn: (message: string) => void;
-  error: (message: string) => void;
 }
 
 const TAG = "[memory-tdai][sqlite]";
@@ -393,6 +391,12 @@ export class VectorStore implements IMemoryStore {
   constructor(dbPath: string, dimensions: number, logger?: Logger) {
     this.dimensions = dimensions;
     this.logger = logger;
+
+    // Ensure parent directory exists (for non-default instance paths)
+    const dbDir = path.dirname(dbPath);
+    if (!existsSync(dbDir)) {
+      mkdirSync(dbDir, { recursive: true });
+    }
 
     // Open database with extension support enabled
     const { DatabaseSync: DbSync } = requireNodeSqlite();

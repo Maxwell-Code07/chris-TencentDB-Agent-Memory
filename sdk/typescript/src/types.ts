@@ -188,3 +188,75 @@ export interface CoreWriteRequest {
 export interface CoreWriteData {
   updated_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Offload (Compaction + Ingest)
+// ---------------------------------------------------------------------------
+
+export interface OffloadToolPair {
+  tool_name: string;
+  tool_call_id: string;
+  params: unknown;
+  result: unknown;
+  error?: string;
+  timestamp: string;
+  duration_ms?: number;
+}
+
+export interface OffloadRecentMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface OffloadIngestRequest {
+  session_id: string;
+  tool_pairs: OffloadToolPair[];
+  prompt?: string;
+  recent_messages?: OffloadRecentMessage[];
+}
+
+export interface OffloadIngestData {
+  accepted: boolean;
+}
+
+export interface OffloadCompactRequest {
+  session_id: string;
+  messages: unknown[];
+  ratio: number;
+  context_window: number;
+  total_tokens: number;
+  message_tokens?: number[];
+}
+
+export interface OffloadCompactReport {
+  resolvedLevel: string;
+  originalCount: number;
+  compactedCount: number;
+  fastPathReplaced: number;
+  fastPathDeleted: number;
+  mildReplacements: number;
+  aggressiveDeleted: number;
+  emergencyDeleted: number;
+  mmdInjected: number;
+}
+
+export interface OffloadCompactData {
+  messages: unknown[];
+  report: OffloadCompactReport;
+}
+
+export interface OffloadQueryMmdRequest {
+  session_id: string;
+  limit?: number;
+}
+
+export interface OffloadMmdFile {
+  filename: string;
+  content: string;
+  version: number;
+}
+
+export interface OffloadQueryMmdData {
+  mmds: OffloadMmdFile[];
+  current_mmd: string | null;
+}

@@ -24,15 +24,8 @@ import type { EmbeddingService } from "../store/embedding.js";
 import { report } from "../report/reporter.js";
 import { metricProducer } from "../report/kafka-metric-producer.js";
 import { reportL1LatencyMetrics } from "../report/metric-tracking-l1-latency.js";
-import type { LLMRunner } from "../types.js";
+import type { LLMRunner, Logger } from "../types.js";
 import type { StorageAdapter } from "../storage/adapter.js";
-
-interface Logger {
-  debug?: (message: string) => void;
-  info: (message: string) => void;
-  warn: (message: string) => void;
-  error: (message: string) => void;
-}
 
 const TAG = "[memory-tdai][l1-extractor]";
 

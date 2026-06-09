@@ -46,6 +46,7 @@ export interface ClassifiedError {
  *
  * Recognized:
  *   - PayloadTooLargeError (CR-7) — detected via duck-typing on statusCode === 413
+ *   - Invalid JSON body — parseJsonBody throws Error("Invalid JSON body") on malformed input
  *   - RecallFailure (H-15) — code from RecallError taxonomy
  *   - SeedValidationError — 400 with generic message
  *   - Anything else — 500 Internal server error
@@ -61,6 +62,37 @@ export function classifyError(err: unknown): ClassifiedError {
       status: 413,
       client: { code: 413, message: msg, trace_id, retryable: false },
       logLine: `[${trace_id}] PayloadTooLargeError: ${msg}`,
+    };
+  }
+
+  // 1b. Invalid JSON body / decompression error — parseJsonBody throws this fixed message on
+  // JSON.parse failure or gzip/deflate decompression failure. Client error, not server fault.
+  if (err instanceof Error && err.message === "Invalid JSON body") {
+    return {
+      status: 400,
+      client: { code: 400, message: "Invalid JSON body", trace_id, retryable: false },
+      logLine: `[${trace_id}] InvalidJsonBody: request body could not be parsed as JSON`,
+    };
+  }
+
+  // 1c. COS AppendPositionErr — concurrent append conflict. The client should retry.
+  // This is a transient conflict, not a permanent error.
+  if (err instanceof Error && /AppendPositionErr|Position not equal object length/i.test(err.message)) {
+    return {
+      status: 409,
+      client: { code: 409, message: "Concurrent write conflict, please retry", trace_id, retryable: true },
+      logLine: `[${trace_id}] CosAppendConflict: ${err.message}`,
+    };
+  }
+
+  // 1d. Unsupported Content-Encoding — parseJsonBody rejects with this message when the
+  // client sends an encoding the server does not support (not gzip/deflate/identity).
+  if (err instanceof Error && err.message.startsWith("Unsupported Content-Encoding:")) {
+    const safeMsg = err.message.replace(/[^\w\s:/-]/g, "");
+    return {
+      status: 415,
+      client: { code: 415, message: safeMsg, trace_id, retryable: false },
+      logLine: `[${trace_id}] UnsupportedEncoding: ${err.message}`,
     };
   }
 

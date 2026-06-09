@@ -2,7 +2,8 @@
  * memory-tencentdb-client — OpenClaw 记忆插件（客户端接入版）
  *
  * 通过 @tencentdb-agent-memory/memory-sdk-ts 连接远端 memory server，
- * 提供四层记忆的自动捕获、召回和工具调用能力。
+ * 提供四层记忆的自动捕获、召回和工具调用能力，
+ * 并集成 offload 上下文压缩/摘要服务。
  *
  * 本插件不包含任何数据处理逻辑（无 VDB/Embedding/Pipeline），
  * 所有操作委托给远端 server。
@@ -14,6 +15,8 @@ import { performCapture } from "./src/hooks/capture.js";
 import { handleMemorySearch } from "./src/tools/memory-search.js";
 import { handleConversationSearch } from "./src/tools/conversation-search.js";
 import { handleReadCos } from "./src/tools/read-cos.js";
+// @ts-ignore — rootDir mismatch in openclaw-plugin tsconfig; resolved at bundle time by tsdown
+import { registerOffloadClient } from "../src/offload-client/index.js";
 
 const TAG = "[memory-client]";
 
@@ -22,6 +25,7 @@ interface ServerConfig {
   url?: string;
   apiKey?: string;
   instanceId?: string;
+  rejectUnauthorized?: boolean;
 }
 interface RecallConfig {
   maxResults?: number;
@@ -31,10 +35,18 @@ interface RecallConfig {
 interface CaptureConfig {
   enabled?: boolean;
 }
+interface OffloadConfig {
+  enabled?: boolean;
+  serverUrl?: string;
+  compactionRatio?: number;
+  ingestTimeoutMs?: number;
+  compactionTimeoutMs?: number;
+}
 interface PluginConfig {
   server?: ServerConfig;
   recall?: RecallConfig;
   capture?: CaptureConfig;
+  offload?: OffloadConfig;
 }
 
 // Matches OpenClaw plugin register() signature: export default function register(api)
@@ -44,6 +56,7 @@ export default function register(api: any) {
   const server = cfg.server ?? {};
   const recall = cfg.recall ?? {};
   const capture = cfg.capture ?? {};
+  const offload = cfg.offload ?? {};
 
   const serverUrl = server.url || "http://127.0.0.1:8420";
   const apiKey = server.apiKey || "sk-xxxx";
@@ -52,6 +65,13 @@ export default function register(api: any) {
   const includePersona = recall.includePersona !== false;
   const includeSceneNav = recall.includeSceneNav !== false;
   const captureEnabled = capture.enabled !== false;
+  const rejectUnauthorized = server.rejectUnauthorized !== false;
+
+  // Offload config (auto-inherits from server config)
+  const offloadEnabled = offload.enabled ?? false;
+  const offloadServerUrl = offload.serverUrl || serverUrl;
+  const offloadCompactionRatio = offload.compactionRatio ?? 0.5;
+  const offloadCompactionTimeoutMs = offload.compactionTimeoutMs ?? 30000;
 
   // ── Initialize SDK ──
   // NOTE: pass config (not a raw Transport) so client.readFile can lazily
@@ -60,12 +80,15 @@ export default function register(api: any) {
     endpoint: serverUrl,
     apiKey,
     serviceId: instanceId,
+    rejectUnauthorized,
   });
+
+
 
   api.logger.info?.(
     `${TAG} Initialized: server=${serverUrl}, instance=${instanceId}, ` +
     `recall(persona=${includePersona},sceneNav=${includeSceneNav},max=${recallMaxResults}), ` +
-    `capture=${captureEnabled}`,
+    `capture=${captureEnabled}, offload=${offloadEnabled}, rejectUnauthorized=${rejectUnauthorized}`,
   );
 
   // ── Register Tools (same pattern as extensions/memory-tencentdb/index.ts) ──
@@ -248,5 +271,18 @@ export default function register(api: any) {
     });
   } else {
     api.logger.info?.(`${TAG} capture disabled by config`);
+  }
+
+  // ── Offload: unified registration via registerOffloadClient ────────────────────
+  if (offloadEnabled) {
+    registerOffloadClient(api, {
+      enabled: true,
+      serverUrl: offloadServerUrl,
+      apiKey,
+      serviceId: instanceId,
+      agentName: "default",
+      compactionRatio: offloadCompactionRatio,
+      compactionTimeoutMs: offloadCompactionTimeoutMs,
+    });
   }
 }

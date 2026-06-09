@@ -121,9 +121,7 @@ if (fs.existsSync(file)) {
 }
 
 config.plugins ??= {};
-config.plugins.slots ??= {};
 config.plugins.entries ??= {};
-config.plugins.slots.memory = pluginId;
 
 const entry = config.plugins.entries[pluginId] ?? {};
 entry.enabled = true;
@@ -173,7 +171,6 @@ cat >&2 <<EOF
 
 [install-openclaw-plugin-v2] Done.
 Memory plugin configured:
-  plugins.slots.memory = "$MEMORY_PLUGIN_ID"
   plugins.entries["$MEMORY_PLUGIN_ID"].enabled = true
 $HOOK_SUMMARY
   server.url = "$TDAI_MEMORY_ENDPOINT"

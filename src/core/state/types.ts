@@ -56,7 +56,7 @@ export interface TimerEntry {
 
 export interface TaskPayload {
   id: string;
-  type: "L1" | "L2" | "L3" | "flush";
+  type: "L1" | "L2" | "L3" | "flush" | "offload-l1" | "offload-l15" | "offload-l2";
   instanceId: string;
   sessionId: string;
   priority: number; // 0=high, 1=normal, 2=low

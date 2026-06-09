@@ -35,6 +35,11 @@
             "type": "string",
             "default": "default",
             "description": "Memory instance id（HTTP header x-tdai-service-id）"
+          },
+          "rejectUnauthorized": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否校验 HTTPS 证书。默认 true；仅自签证书测试环境需要显式设为 false"
           }
         }
       },
@@ -67,6 +72,36 @@
             "type": "boolean",
             "default": true,
             "description": "是否启用自动对话捕获 (L0)"
+          }
+        }
+      },
+      "offload": {
+        "type": "object",
+        "description": "Offload 压缩/摘要服务配置（可选，不配则复用 server 配置）",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "是否启用 Offload 上下文压缩"
+          },
+          "serverUrl": {
+            "type": "string",
+            "description": "Offload server URL。不填则自动从 server.url 推导（替换端口为 9100）"
+          },
+          "compactionRatio": {
+            "type": "number",
+            "default": 0.5,
+            "description": "上下文占比超过此阈值时触发压缩（0-1）"
+          },
+          "ingestTimeoutMs": {
+            "type": "number",
+            "default": 5000,
+            "description": "Ingest 请求超时（毫秒）"
+          },
+          "compactionTimeoutMs": {
+            "type": "number",
+            "default": 30000,
+            "description": "Compaction 请求超时（毫秒）"
           }
         }
       }

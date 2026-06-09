@@ -152,7 +152,7 @@ export class TimerScanner {
         }
 
         for (const entry of expired) {
-          const { instanceId, sessionId, taskType, priority } = this.parseShardMember(entry.member);
+          const { instanceId, sessionId, taskType, priority, timerType } = this.parseShardMember(entry.member);
 
           const task: TaskPayload = {
             id: `${taskType}-${instanceId.slice(-8)}-${sessionId.slice(-8)}-${now}`,
@@ -161,7 +161,7 @@ export class TimerScanner {
             sessionId,
             priority,
             createdAt: now,
-            data: { triggeredBy: "timer_scanner", timerMember: `${sessionId}:${taskType === "L1" ? "L1_idle" : taskType === "L2" ? "L2_schedule" : "L3"}`, instanceId },
+            data: { triggeredBy: "timer_scanner", timerMember: `${sessionId}:${timerType}`, instanceId },
           };
 
           await this.backend.enqueueTask(task);
@@ -191,7 +191,7 @@ export class TimerScanner {
    * Parse shard member format: "{instanceId}\x00{sessionId}:{timerType}"
    * Example: "mem-j4wjesud\x00sess_001:L1_idle" → { instanceId: "mem-j4wjesud", sessionId: "sess_001", taskType: "L1" }
    */
-  private parseShardMember(member: string): { instanceId: string; sessionId: string; taskType: "L1" | "L2" | "L3" | "flush"; priority: number } {
+  private parseShardMember(member: string): { instanceId: string; sessionId: string; taskType: TaskPayload["type"]; priority: number; timerType: string } {
     const sep = member.indexOf("\x00");
     let instanceId: string;
     let rest: string;
@@ -206,19 +206,51 @@ export class TimerScanner {
       rest = member.slice(firstColon + 1);
     }
 
-    // rest = "sessionId:timerType" (e.g. "sess_001:L1_idle", "sess_001:L2_schedule")
+    // rest = timer member after instanceId separator
+    // New unified format: "offload-{type}:{embeddedInstanceId}:{sessionId}[:{extra}]" (prefix-based)
+    // Legacy format: "sessionId:L1_idle" or "sessionId:L2_schedule"
+
+    // Check for offload prefix format first
+    if (rest.startsWith("offload-l15:")) {
+      // Skip embedded instanceId: "offload-l15:{instanceId}:{sessionId}"
+      const afterPrefix = rest.slice("offload-l15:".length);
+      const colonIdx = afterPrefix.indexOf(":");
+      const sessionId = colonIdx > 0 ? afterPrefix.slice(colonIdx + 1) : afterPrefix;
+      return { instanceId, sessionId, taskType: "offload-l15", priority: 0, timerType: rest };
+    }
+    if (rest.startsWith("offload-l2:")) {
+      // Skip embedded instanceId: "offload-l2:{instanceId}:{sessionId}[:{mmdFile}]"
+      const afterPrefix = rest.slice("offload-l2:".length);
+      const colonIdx = afterPrefix.indexOf(":");
+      let sessionId = colonIdx > 0 ? afterPrefix.slice(colonIdx + 1) : afterPrefix;
+      // Strip trailing ":{mmdFile}" from sessionId
+      if (sessionId.endsWith(".mmd")) {
+        const lastColon = sessionId.lastIndexOf(":");
+        if (lastColon > 0) sessionId = sessionId.slice(0, lastColon);
+      }
+      return { instanceId, sessionId, taskType: "offload-l2", priority: 1, timerType: rest };
+    }
+    if (rest.startsWith("offload-l1:")) {
+      // Skip embedded instanceId: "offload-l1:{instanceId}:{sessionId}"
+      const afterPrefix = rest.slice("offload-l1:".length);
+      const colonIdx = afterPrefix.indexOf(":");
+      const sessionId = colonIdx > 0 ? afterPrefix.slice(colonIdx + 1) : afterPrefix;
+      return { instanceId, sessionId, taskType: "offload-l1", priority: 0, timerType: rest };
+    }
+
+    // For non-offload types, use lastColon (original logic)
     const lastColon = rest.lastIndexOf(":");
     if (lastColon <= 0) {
-      return { instanceId, sessionId: rest, taskType: "L1", priority: 0 };
+      return { instanceId, sessionId: rest, taskType: "L1", priority: 0, timerType: "L1_idle" };
     }
 
     const sessionId = rest.slice(0, lastColon);
     const timerType = rest.slice(lastColon + 1);
 
-    if (timerType.startsWith("L1")) return { instanceId, sessionId, taskType: "L1", priority: 0 };
-    if (timerType.startsWith("L2")) return { instanceId, sessionId, taskType: "L2", priority: 1 };
-    if (timerType.startsWith("L3")) return { instanceId, sessionId, taskType: "L3", priority: 2 };
-    return { instanceId, sessionId, taskType: "flush", priority: 0 };
+    if (timerType.startsWith("L1")) return { instanceId, sessionId, taskType: "L1", priority: 0, timerType };
+    if (timerType.startsWith("L2")) return { instanceId, sessionId, taskType: "L2", priority: 1, timerType };
+    if (timerType.startsWith("L3")) return { instanceId, sessionId, taskType: "L3", priority: 2, timerType };
+    return { instanceId, sessionId, taskType: "flush", priority: 0, timerType };
   }
 }
 

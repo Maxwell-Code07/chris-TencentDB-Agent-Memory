@@ -971,11 +971,19 @@ class MemoryTencentdbProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("memory-tencentdb session end failed: %s", e)
 
-        # Note: do NOT shut down the supervisor/Gateway here — it may serve
-        # other sessions. The Gateway manages its own lifecycle.
-        # We *do* drop our reference to the supervisor so any in-flight
-        # _try_recover_gateway() call sees self._supervisor is None and
-        # bails out instead of resurrecting a released provider.
+        # Stop only the Gateway process this supervisor spawned. If the
+        # provider merely attached to an already-running external Gateway,
+        # GatewaySupervisor.shutdown() is a no-op because _process is None.
+        supervisor = self._supervisor
+        if supervisor is not None:
+            try:
+                supervisor.shutdown()
+            except Exception as e:
+                logger.debug("memory-tencentdb supervisor shutdown failed: %s", e)
+
+        # Drop our reference so any in-flight _try_recover_gateway() call sees
+        # self._supervisor is None and bails out instead of resurrecting a
+        # released provider.
         self._client = None
         self._gateway_available = False
         self._initialized = False

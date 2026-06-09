@@ -22,6 +22,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import registerClientOpenClawPlugin from "./openclaw-plugin/index.js";
 import { parseConfig } from "./src/config.js";
 import type { MemoryTdaiConfig } from "./src/config.js";
 import { executeReadCos, READ_COS_TOOL_SCHEMA, READ_COS_TOOL_NAME, READ_COS_TOOL_DESCRIPTION } from "./src/core/tools/read-cos.js";
@@ -29,6 +30,7 @@ import { LocalStorageBackend } from "./src/core/storage/local-backend.js";
 import { StaticCredentialProvider } from "./src/core/storage/credential-provider.js";
 import type { IStorageBackend } from "./src/core/storage/types.js";
 import { registerOffload } from "./src/offload/index.js";
+import { registerOffloadClient } from "./src/offload-client/index.js";
 import {
   setPreferredEmbeddedAgentRuntime,
   prewarmEmbeddedAgent,
@@ -51,6 +53,22 @@ import {
 import { resolveOpenClawStateDir } from "./src/utils/openclaw-state-dir.js";
 
 const TAG = "[memory-tdai]";
+
+type OpenClawAdapterMode = "local" | "client";
+
+function resolveOpenClawAdapterMode(rawPluginConfig: Record<string, unknown> | undefined): OpenClawAdapterMode {
+  const rawMode = typeof rawPluginConfig?.mode === "string"
+    ? rawPluginConfig.mode.trim().toLowerCase()
+    : "";
+
+  if (rawMode === "client" || rawMode === "gateway" || rawMode === "remote") {
+    return "client";
+  }
+
+  // Default to local/function mode: OpenClaw calls this plugin in-process and
+  // memory processing uses the host LLM runner (no standalone Gateway needed).
+  return "local";
+}
 
 /**
  * Epoch ms when the plugin was registered (cold-start timestamp).
@@ -158,6 +176,13 @@ export default function register(api: OpenClawPluginApi) {
   }
 
   // ─── Full / discovery mode: complete runtime initialization ───
+  const rawPluginConfigForMode = api.pluginConfig as Record<string, unknown> | undefined;
+  const adapterMode = resolveOpenClawAdapterMode(rawPluginConfigForMode);
+  if (adapterMode === "client") {
+    api.logger.info?.(`${TAG} mode=client: delegating to memory-tencentdb-client adapter`);
+    return registerClientOpenClawPlugin(api as any);
+  }
+
   pluginStartTimestamp = Date.now();
   setPreferredEmbeddedAgentRuntime(api.runtime.agent);
   // Reset reporter singleton so config changes take effect on hot-reload.
@@ -189,7 +214,7 @@ export default function register(api: OpenClawPluginApi) {
       `pipeline=(everyN=${cfg.pipeline.everyNConversations}, warmup=${cfg.pipeline.enableWarmup}, l1Idle=${cfg.pipeline.l1IdleTimeoutSeconds}s, l2DelayAfterL1=${cfg.pipeline.l2DelayAfterL1Seconds}s, l2Min=${cfg.pipeline.l2MinIntervalSeconds}s, l2Max=${cfg.pipeline.l2MaxIntervalSeconds}s, activeWindow=${cfg.pipeline.sessionActiveWindowHours}h), ` +
       `persona(triggerEvery=${cfg.persona.triggerEveryN}, backupCount=${cfg.persona.backupCount}, sceneBackupCount=${cfg.persona.sceneBackupCount}), ` +
       `memoryCleanup(enabled=${cfg.memoryCleanup.enabled}, retentionDays=${cfg.memoryCleanup.retentionDays ?? "(disabled)"}, cleanTime=${cfg.memoryCleanup.cleanTime}), ` +
-      `offload(enabled=${cfg.offload.enabled}, backendUrl=${cfg.offload.backendUrl ?? "(none)"}, mildRatio=${cfg.offload.mildOffloadRatio}, aggressiveRatio=${cfg.offload.aggressiveCompressRatio}, retentionDays=${cfg.offload.offloadRetentionDays})`,
+      `offload(enabled=${cfg.offload.enabled}, mode=${cfg.offload.mode}, ${cfg.offload.mode === "client" ? `serverUrl=${cfg.offload.serverUrl ?? "(none)"}` : `backendUrl=${cfg.offload.backendUrl ?? "(none)"}, mildRatio=${cfg.offload.mildOffloadRatio}, aggressiveRatio=${cfg.offload.aggressiveCompressRatio}`}, retentionDays=${cfg.offload.offloadRetentionDays})`,
     );
   } catch (err) {
     api.logger.error(`${TAG} Config parsing failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -232,7 +257,7 @@ export default function register(api: OpenClawPluginApi) {
       try {
         ensurePluginHookPolicy({
           rootConfig: api.config,
-          runtimeConfig: api.runtime?.config,
+          runtimeConfig: (api.runtime as any)?.config,
           logger: api.logger,
         });
       } catch (err) {
@@ -556,7 +581,10 @@ export default function register(api: OpenClawPluginApi) {
       storagePromise = (async (): Promise<IStorageBackend> => {
         if (cosSecretId && cosSecretKey && cosBucket) {
           try {
-            const { CosStorageBackend } = await import("./src/integrations/cos/cos-backend.js");
+            const cosBackendModulePath = ["./src/integrations/cos", "cos-backend.js"].join("/");
+            const { CosStorageBackend } = await import(cosBackendModulePath) as {
+              CosStorageBackend: new (options: any) => IStorageBackend;
+            };
             const backend = new CosStorageBackend({
               credentialProvider: new StaticCredentialProvider({
                 secretId: cosSecretId,
@@ -954,8 +982,24 @@ export default function register(api: OpenClawPluginApi) {
   if (cfg.offload.enabled) {
     api.logger.debug?.(`${TAG} Offload enabled, registering offload module...`);
     try {
-      registerOffload(api, cfg.offload);
-      api.logger.debug?.(`${TAG} Offload module registered successfully`);
+      if (cfg.offload.mode === "client") {
+        // New: stateless client mode — all compression delegated to server
+        registerOffloadClient(api as any, {
+          enabled: cfg.offload.enabled,
+          serverUrl: cfg.offload.serverUrl ?? "",
+          apiKey: cfg.offload.apiKey ?? "",
+          serviceId: cfg.offload.serviceId ?? "",
+          agentName: cfg.offload.agentName ?? "default",
+          compactionRatio: cfg.offload.compactionRatio ?? 0.5,
+          ingestTimeoutMs: cfg.offload.ingestTimeoutMs ?? 5000,
+          compactionTimeoutMs: cfg.offload.compactionTimeoutMs ?? 30000,
+        });
+        api.logger.debug?.(`${TAG} Offload client module registered (mode=client)`);
+      } else {
+        // Legacy: full local L3 compression
+        registerOffload(api, cfg.offload);
+        api.logger.debug?.(`${TAG} Offload module registered successfully (mode=${cfg.offload.mode})`);
+      }
     } catch (err) {
       api.logger.error(`${TAG} Offload module registration failed: ${err instanceof Error ? err.message : String(err)}`);
     }

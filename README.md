@@ -121,6 +121,53 @@ docker pull agentmemory/hermes-memory:1.0.0-beta
 docker pull agentmemory/openclaw-memory:1.0.0-beta
 ```
 
+### 1.2 Zero-config to enable
+
+Defaults to a local `SQLite + sqlite-vec` backend.
+
+```jsonc
+// ~/.openclaw/openclaw.json
+{
+  "memory-tencentdb": {
+    "enabled": true
+  }
+}
+```
+
+Once enabled, TencentDB Agent Memory automatically handles conversation capture, memory extraction, scene aggregation, persona generation, and recall before the next turn.
+
+### 1.3 Enable short-term compression (optional, requires version ≥ 0.3.4)
+
+```jsonc
+{
+  "memory-tencentdb": {
+    "config": {
+      "offload": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+#### Step 1 — Register the slot in your plugin config
+
+Add the `slots` field so OpenClaw routes context-offload requests to this plugin:
+
+```jsonc
+{
+  "plugins": {
+    "slots": {
+      "contextEngine": "memory-tencentdb"
+    }
+  }
+}
+```
+
+#### Step 2 — Apply the runtime patch
+
+For the best results, run the patch script below. It hooks `after-tool-call` messages so they can be offloaded and recovered correctly:
+
 #### Hermes + Memory (standalone)
 
 ```bash

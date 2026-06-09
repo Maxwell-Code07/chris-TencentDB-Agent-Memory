@@ -213,11 +213,12 @@ export interface OffloadConfig {
    * LLM execution mode for L1/L1.5/L2 tasks.
    * - "local": call LLM directly via AI SDK (uses offload.model or main agent model)
    * - "backend": route through remote backend service (requires backendUrl)
+   * - "client": stateless client mode — all compression delegated to offload server v2
    * - "collect": data collection only — runs L1/L1.5/L2 asynchronously but disables
    *   L3 compression and does NOT occupy the contextEngine slot (uses legacy compaction)
    * Default: "local" (auto-detects based on backendUrl presence for backward compat)
    */
-  mode: "local" | "backend" | "collect";
+  mode: "local" | "backend" | "client" | "collect";
   /** LLM model for offload tasks, format: "provider/model-id". Falls back to agents.defaults.model when omitted. */
   model?: string;
   /** LLM temperature (default: 0.2) */
@@ -265,6 +266,22 @@ export interface OffloadConfig {
    * primary non-loopback IPv4 address.
    */
   userId?: string;
+
+  // ── Client mode fields (used when mode === "client") ──────────────
+  /** Offload server v2 base URL (e.g. "http://localhost:9100"). */
+  serverUrl?: string;
+  /** Bearer token for offload server v2 Authorization header. */
+  apiKey?: string;
+  /** X-TDAI-Service-Id header value. */
+  serviceId?: string;
+  /** Agent name used in storage path (default: "default"). */
+  agentName?: string;
+  /** Client-side threshold: skip compaction when ratio < this value (default: 0.5). */
+  compactionRatio?: number;
+  /** Ingest request timeout in ms (default: 5000). */
+  ingestTimeoutMs?: number;
+  /** Compaction request timeout in ms (default: 30000). */
+  compactionTimeoutMs?: number;
 }
 
 /** Fully resolved plugin configuration (v3). */
@@ -439,10 +456,20 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
   // --- Offload ---
   const offloadGroup = obj(c, "offload");
 
-  const offloadMode: "local" | "backend" | "collect" = (() => {
+  // Auto-derive offload serverUrl/apiKey/serviceId from top-level server config
+  // when offload client fields are not explicitly set.
+  const serverGroup = obj(c, "server");
+  const serverUrl = optStr(serverGroup, "url");
+  const serverApiKey = optStr(serverGroup, "apiKey");
+  const serverInstanceId = optStr(serverGroup, "instanceId");
+
+  const offloadMode: "local" | "backend" | "client" | "collect" = (() => {
     const raw = optStr(offloadGroup, "mode");
-    if (raw === "local" || raw === "backend" || raw === "collect") return raw;
-    return optStr(offloadGroup, "backendUrl") ? "backend" : "local";
+    if (raw === "local" || raw === "backend" || raw === "client" || raw === "collect") return raw;
+    // Auto-derive: if backendUrl is set → "backend"; if server.url is set → "client"; else "local"
+    if (optStr(offloadGroup, "backendUrl")) return "backend";
+    if (serverUrl) return "client";
+    return "local";
   })();
 
   const offload: OffloadConfig = {
@@ -465,6 +492,13 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     offloadRetentionDays: normalizeOffloadRetentionDays(num(offloadGroup, "offloadRetentionDays") ?? 0),
     logMaxSizeMb: num(offloadGroup, "logMaxSizeMb") ?? 50,
     userId: optStr(offloadGroup, "userId"),
+    // Client mode fields — fall back to top-level server config when not explicitly set
+    serverUrl: optStr(offloadGroup, "serverUrl") ?? serverUrl,
+    apiKey: optStr(offloadGroup, "apiKey") ?? serverApiKey,
+    serviceId: optStr(offloadGroup, "serviceId") ?? serverInstanceId,
+    compactionRatio: num(offloadGroup, "compactionRatio") ?? 0.5,
+    ingestTimeoutMs: num(offloadGroup, "ingestTimeoutMs") ?? 5000,
+    compactionTimeoutMs: num(offloadGroup, "compactionTimeoutMs") ?? 30000,
   };
 
   return {

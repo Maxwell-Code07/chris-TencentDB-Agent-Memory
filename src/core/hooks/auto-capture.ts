@@ -20,14 +20,9 @@ import type { IMemoryStore, L0Record } from "../store/types.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 
-const TAG = "[memory-tdai] [capture]";
+import type { Logger } from "../types.js";
 
-interface Logger {
-  debug?: (message: string) => void;
-  info: (message: string) => void;
-  warn: (message: string) => void;
-  error: (message: string) => void;
-}
+const TAG = "[memory-tdai] [capture]";
 
 export interface AutoCaptureResult {
   /** Whether the scheduler was notified (conversation count incremented) */

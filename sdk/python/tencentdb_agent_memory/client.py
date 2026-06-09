@@ -255,6 +255,116 @@ class MemoryClient:
         """``POST /core/write``"""
         return self._stub.post(f"{_V2}/core/write", {"content": content})
 
+    # -- Offload (Ingest + Compact + Query-MMD) ----------------------------
+
+    def offload_ingest(
+        self,
+        session_id: str,
+        tool_pairs: List[Dict[str, Any]],
+        *,
+        prompt: Optional[str] = None,
+        recent_messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """``POST /v2/offload/ingest`` — 上报工具调用对，触发 L1 异步处理。
+
+        可 fire-and-forget 使用（忽略返回值）。
+
+        Parameters
+        ----------
+        session_id : str
+            会话 ID。
+        tool_pairs : list[dict]
+            工具调用对列表，每个元素包含 ``tool_name``、``tool_call_id``、
+            ``params``、``result``、``timestamp``，可选 ``duration_ms``。
+        prompt : str, optional
+            最新 user message，用于 L1.5 任务判断。
+        recent_messages : list[dict], optional
+            近期历史消息列表（``role`` + ``content``），辅助 L1 提取上下文。
+        """
+        return self._stub.post(
+            f"{_V2}/offload/ingest",
+            _strip_none({
+                "session_id": session_id,
+                "tool_pairs": tool_pairs,
+                "prompt": prompt,
+                "recent_messages": recent_messages,
+            }),
+        )
+
+    def offload_compact(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        ratio: float,
+        total_tokens: int,
+        *,
+        context_window: Optional[int] = None,
+        message_tokens: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        """``POST /v2/offload/compact`` — 对 messages 执行服务端上下文压缩。
+
+        Parameters
+        ----------
+        session_id : str
+            会话 ID。
+        messages : list[dict]
+            当前完整对话消息列表。
+        ratio : float
+            当前 token 使用比例（已用 / context_window），触发压缩策略判断。
+        total_tokens : int
+            当前完整上下文的总 token 数（包含 system prompt、tool schemas 等不在
+            messages 中的隐性开销）。服务端用于计算 fixed overhead 和校准 token 估算。
+        context_window : int, optional
+            模型 context window 大小（token 数）。
+        message_tokens : list[int], optional
+            每条消息对应的 token 数，提供时可跳过服务端估算，提升性能。
+
+        Returns
+        -------
+        dict
+            ``messages``（压缩后消息列表）+ ``report``（压缩报告）。
+        """
+        return self._stub.post(
+            f"{_V2}/offload/compact",
+            _strip_none({
+                "session_id": session_id,
+                "messages": messages,
+                "ratio": ratio,
+                "total_tokens": total_tokens,
+                "context_window": context_window,
+                "message_tokens": message_tokens,
+            }),
+        )
+
+    def offload_query_mmd(
+        self,
+        session_id: str,
+        *,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """``POST /v2/offload/query-mmd`` — 查询 session 的任务流程图（MMD 文件）。
+
+        Parameters
+        ----------
+        session_id : str
+            会话 ID。
+        limit : int, optional
+            最多返回几个 MMD 文件。``limit=1`` 时走快速路径只返回当前活跃 MMD。
+
+        Returns
+        -------
+        dict
+            ``mmds``（列表，每项含 ``filename``、``content``、``version``）+
+            ``current_mmd``（当前活跃 MMD 文件名，无则为 ``None``）。
+        """
+        return self._stub.post(
+            f"{_V2}/offload/query-mmd",
+            _strip_none({
+                "session_id": session_id,
+                "limit": limit,
+            }),
+        )
+
     # -- File read (memory pipeline artifacts) -----------------------------
 
     def read_file(self, path: str) -> str:
@@ -431,6 +541,65 @@ class AsyncMemoryClient:
 
     async def write_core(self, content: str) -> Dict[str, Any]:
         return await self._stub.post(f"{_V2}/core/write", {"content": content})
+
+    # -- Offload (Ingest + Compact + Query-MMD) ----------------------------
+
+    async def offload_ingest(
+        self,
+        session_id: str,
+        tool_pairs: List[Dict[str, Any]],
+        *,
+        prompt: Optional[str] = None,
+        recent_messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """``POST /v2/offload/ingest``（异步）"""
+        return await self._stub.post(
+            f"{_V2}/offload/ingest",
+            _strip_none({
+                "session_id": session_id,
+                "tool_pairs": tool_pairs,
+                "prompt": prompt,
+                "recent_messages": recent_messages,
+            }),
+        )
+
+    async def offload_compact(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        ratio: float,
+        total_tokens: int,
+        *,
+        context_window: Optional[int] = None,
+        message_tokens: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        """``POST /v2/offload/compact``（异步）"""
+        return await self._stub.post(
+            f"{_V2}/offload/compact",
+            _strip_none({
+                "session_id": session_id,
+                "messages": messages,
+                "ratio": ratio,
+                "total_tokens": total_tokens,
+                "context_window": context_window,
+                "message_tokens": message_tokens,
+            }),
+        )
+
+    async def offload_query_mmd(
+        self,
+        session_id: str,
+        *,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """``POST /v2/offload/query-mmd``（异步）"""
+        return await self._stub.post(
+            f"{_V2}/offload/query-mmd",
+            _strip_none({
+                "session_id": session_id,
+                "limit": limit,
+            }),
+        )
 
     # -- lifecycle ---------------------------------------------------------
 

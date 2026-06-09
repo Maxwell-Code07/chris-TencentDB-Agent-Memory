@@ -231,6 +231,69 @@ def test_reap_dead_process_keeps_alive_handle():
     assert sup._process is alive
 
 
+def test_ensure_running_singleflight_prevents_duplicate_spawn(monkeypatch):
+    """Concurrent supervisors for one port must spawn at most one Gateway."""
+    port = 28421
+    running = False
+    spawn_envs = []
+    spawn_lock = threading.Lock()
+
+    class FakePopen:
+        pid = 12345
+        returncode = None
+
+        def poll(self):
+            return None
+
+    def fake_is_running(self):
+        return running
+
+    def fake_wait_for_health(self):
+        nonlocal running
+        time.sleep(0.1)
+        running = True
+        return True
+
+    def fake_popen(_argv, *, env, stdout, stderr, start_new_session):
+        with spawn_lock:
+            spawn_envs.append(dict(env))
+        assert start_new_session is True
+        return FakePopen()
+
+    monkeypatch.setattr(supervisor_module.GatewaySupervisor, "is_running", fake_is_running)
+    monkeypatch.setattr(supervisor_module.GatewaySupervisor, "_wait_for_health", fake_wait_for_health)
+    monkeypatch.setattr(supervisor_module.subprocess, "Popen", fake_popen)
+
+    supervisors = [
+        supervisor_module.GatewaySupervisor(
+            host="127.0.0.1",
+            port=port,
+            gateway_cmd="fake gateway",
+        )
+        for _ in range(6)
+    ]
+    barrier = threading.Barrier(len(supervisors))
+    results = []
+
+    def worker(sup):
+        barrier.wait()
+        results.append(sup.ensure_running())
+
+    threads = [threading.Thread(target=worker, args=(sup,)) for sup in supervisors]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=3)
+
+    assert results == [True] * len(supervisors)
+    assert len(spawn_envs) == 1
+    env = spawn_envs[0]
+    assert env["MEMORY_TENCENTDB_GATEWAY_PORT"] == str(port)
+    assert env["MEMORY_TENCENTDB_GATEWAY_HOST"] == "127.0.0.1"
+    assert env["TDAI_GATEWAY_PORT"] == str(port)
+    assert env["TDAI_GATEWAY_HOST"] == "127.0.0.1"
+
+
 # ---------------------------------------------------------------------------
 # Watchdog: detects death, resurrects, and reattaches
 # ---------------------------------------------------------------------------

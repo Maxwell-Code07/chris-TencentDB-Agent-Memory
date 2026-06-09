@@ -27,18 +27,13 @@ import { normalizeSceneFilenames } from "./filename-normalizer.js";
 import { buildSceneExtractionPrompt } from "../prompts/scene-extraction.js";
 import { report } from "../report/reporter.js";
 import { reportL2LatencyMetrics } from "../report/metric-tracking-l2-latency.js";
-import type { LLMRunner } from "../types.js";
+import type { LLMRunner, Logger } from "../types.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 
 const TAG = "[memory-tdai] [extractor]";
 
-interface ExtractorLogger {
-  debug?: (message: string) => void;
-  info: (message: string) => void;
-  warn: (message: string) => void;
-  error: (message: string) => void;
-}
+type ExtractorLogger = Logger;
 
 export interface ExtractionResult {
   memoriesProcessed: number;
@@ -470,24 +465,24 @@ export class SceneExtractor {
         success: true,
         error: null,
       });
-    }
 
-    // ── 评测指标：L2 延迟 + 场景变化 ──
-    try {
-      const postSceneCount = (await readSceneIndex(this.dataDir, this.storage)).length;
-      reportL2LatencyMetrics({
-        instanceId: this.instanceId ?? "",
-        extractionLatencyMs: totalMs,
-        llmDurationMs: llmDurationMs > 0 ? llmDurationMs : null,
-        sceneCountBefore: preExtractIndex.size,
-        sceneCountAfter: postSceneCount,
-        scenesCreated,
-        scenesUpdated,
-        scenesDeleted,
-        hasError: false,
-      });
-    } catch {
-      // 静默忽略
+      // ── 评测指标：L2 延迟 + 场景变化 ──
+      try {
+        const postSceneCount = (await readSceneIndex(this.dataDir, this.storage)).length;
+        reportL2LatencyMetrics({
+          instanceId: this.instanceId ?? "",
+          extractionLatencyMs: totalMs,
+          llmDurationMs: llmDurationMs > 0 ? llmDurationMs : null,
+          sceneCountBefore: preExtractIndex.size,
+          sceneCountAfter: postSceneCount,
+          scenesCreated,
+          scenesUpdated,
+          scenesDeleted,
+          hasError: false,
+        });
+      } catch {
+        // 静默忽略
+      }
     }
 
     // Detect empty extraction: pre and post scene_index both empty means LLM didn't write anything

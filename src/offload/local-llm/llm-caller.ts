@@ -27,6 +27,8 @@ export interface CallLlmOpts {
   timeoutMs?: number;
   /** Label for logging (e.g. "L1", "L1.5", "L2") */
   label?: string;
+  /** Instance ID for telemetry metadata */
+  instanceId?: string;
 }
 
 /**
@@ -64,6 +66,7 @@ export async function callLlm(
       experimental_telemetry: {
         isEnabled: true,
         functionId: opts.label ?? "offload-llm",
+        metadata: { instanceId: opts.instanceId ?? "unknown" },
       },
     });
 

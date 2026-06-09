@@ -198,14 +198,19 @@ export class MetricTrackingRunner implements LLMRunner {
   }
 
   async run(params: LLMRunParams): Promise<string> {
+    // 0. 注入 instanceId（如果调用方没传，从 getInstanceId 回调获取）
+    const enrichedParams = params.instanceId
+      ? params
+      : { ...params, instanceId: this.getInstanceId() };
+
     // 1. 先执行原方法，拿到结果（异常直接 re-throw）
-    const text = await this.inner.run(params);
+    const text = await this.inner.run(enrichedParams);
 
     // 2. 原方法成功后，try-catch 做上报（静默失败）
     try {
       const metricName = taskIdToMetricName(params.taskId);
       if (metricName) {
-        const instanceId = params.instanceId ?? this.getInstanceId();
+        const instanceId = enrichedParams.instanceId ?? this.getInstanceId();
         if (instanceId) {
           // 优先从 inner runner 的 lastUsage side-channel 读取精确 token 数
           const innerWithUsage = this.inner as LLMRunnerWithUsage;

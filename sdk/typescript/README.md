@@ -58,6 +58,28 @@ console.log(core.content);
 // L3: write core memory
 await client.writeCore({ content: "# User Profile\n..." });
 
+// Offload v2: send tool pairs for server-side L1 async processing (fire-and-forget)
+await client.offloadIngest({
+  session_id: "agent_sess_123",
+  tool_pairs: [
+    { tool_name: "search", tool_call_id: "call_1", params: { q: "..." }, result: "...", timestamp: "..." },
+  ],
+});
+
+// Offload v2: server-side context compaction (sync wait for result)
+const compacted = await client.offloadCompact({
+  session_id: "agent_sess_123",
+  messages: [...],
+  ratio: 0.7,
+  context_window: 128000,
+  total_tokens: 160000,
+});
+console.log(compacted.messages, compacted.report);
+
+// Offload v2: query MMD task graphs
+const mmd = await client.offloadQueryMmd({ session_id: "agent_sess_123", limit: 1 });
+console.log(mmd.current_mmd, mmd.mmds);
+
 // Read memory pipeline artifacts (e.g. persona.md, scene_blocks/*.md)
 const raw = await client.readFile("scene_blocks/工作.md");
 ```
@@ -80,6 +102,9 @@ const raw = await client.readFile("scene_blocks/工作.md");
 | L2 | `rmScenario()` | `POST /v2/scenario/rm` |
 | L3 | `readCore()` | `POST /v2/core/read` |
 | L3 | `writeCore()` | `POST /v2/core/write` |
+| Offload | `offloadIngest()` | `POST /v2/offload/ingest` |
+| Offload | `offloadCompact()` | `POST /v2/offload/compact` |
+| Offload | `offloadQueryMmd()` | `POST /v2/offload/query-mmd` |
 
 ## Error Handling
 

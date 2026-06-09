@@ -17,6 +17,7 @@
 import http from "node:http";
 import { URL } from "node:url";
 import { timingSafeEqual } from "node:crypto";
+import zlib from "node:zlib";
 import dayjs from "dayjs";
 import { TdaiCore } from "../core/tdai-core.js";
 import { StandaloneHostAdapter } from "../adapters/standalone/host-adapter.js";
@@ -53,6 +54,9 @@ import { executeSeed } from "../core/seed/seed-runtime.js";
 import type { SeedProgress } from "../core/seed/types.js";
 import { handleV2Route, errorEnvelope, makeRequestId } from "./v2-router.js";
 import type { V2RouterDeps } from "./v2-router.js";
+import { handleOffloadV2Route } from "../offload_server/router.js";
+import type { OffloadV2Deps } from "../offload_server/router.js";
+import { initServerOpikTracer } from "../offload_server/opik-tracer.js";
 import { classifyError } from "./error-handler.js";
 import { LocalStorageBackend } from "../core/storage/local-backend.js";
 import { StorageAdapter } from "../core/storage/adapter.js";
@@ -142,11 +146,25 @@ export async function parseJsonBody<T>(req: http.IncomingMessage): Promise<T> {
       return;
     }
 
+    // Determine if the body is compressed (Content-Encoding header).
+    // Support gzip and deflate; reject unsupported encodings with 400.
+    const encoding = (req.headers["content-encoding"] ?? "").toLowerCase().trim();
+    let source: NodeJS.ReadableStream = req;
+    if (encoding === "gzip" || encoding === "x-gzip") {
+      source = req.pipe(zlib.createGunzip());
+    } else if (encoding === "deflate") {
+      source = req.pipe(zlib.createInflate());
+    } else if (encoding !== "" && encoding !== "identity") {
+      req.resume(); // drain
+      reject(new Error(`Unsupported Content-Encoding: ${encoding}`));
+      return;
+    }
+
     const chunks: Buffer[] = [];
     let received = 0;
     let aborted = false;
 
-    req.on("data", (chunk: Buffer) => {
+    source.on("data", (chunk: Buffer) => {
       if (aborted) return;
       received += chunk.length;
       if (received > MAX_BODY_BYTES) {
@@ -157,18 +175,19 @@ export async function parseJsonBody<T>(req: http.IncomingMessage): Promise<T> {
       }
       chunks.push(chunk);
     });
-    req.on("end", () => {
+    source.on("end", () => {
       if (aborted) return;
       try {
         const body = Buffer.concat(chunks).toString("utf-8");
         resolve(JSON.parse(body) as T);
-      } catch (err) {
+      } catch {
         reject(new Error("Invalid JSON body"));
       }
     });
-    req.on("error", (err) => {
+    source.on("error", (_err) => {
       if (aborted) return;  // already rejected with PayloadTooLargeError
-      reject(err);
+      // Decompression errors (e.g. truncated gzip) are client-side faults
+      reject(new Error("Invalid JSON body"));
     });
   });
 }
@@ -332,6 +351,9 @@ export class TdaiGateway {
 
     // Initialize core
     await this.core.initialize();
+
+    // ── Initialize Opik tracer for offload server ──
+    await initServerOpikTracer(this.logger);
 
     // ── Initialize StorageAdapter for v2 API ──
     // In standalone mode, use LocalStorageBackend pointing to dataDir.
@@ -577,6 +599,17 @@ export class TdaiGateway {
           v2Deps.quotaManager = this.quotaManager;
         }
       }
+
+      // ── Offload V2 routes (async ingest + mmd query) ──
+      const offloadDeps: OffloadV2Deps = {
+        resolveStorage: v2Deps.resolveStorage,
+        getStorage: v2Deps.getStorage ?? (() => undefined),
+        logger: this.logger,
+        stateBackend: this.stateBackend,
+        config: { ...this.config.offload, l1Model: "", l15Model: "", l2Model: "" },
+      };
+      const offloadHandled = await handleOffloadV2Route(req, res, pathname, method, parseJsonBody, sendJson, offloadDeps);
+      if (offloadHandled) return;
 
       const handled = await handleV2Route(req, res, pathname, method, parseJsonBody, sendJson, v2Deps);
       if (handled) return;
@@ -1101,26 +1134,65 @@ export class TdaiGateway {
       type: backendType,
       local: backendType === "local" ? {
         onTimerExpired: (entry) => {
-          // Parse timer member: "sessionId:L2_schedule" or "sessionId:L1_idle"
-          const parts = entry.member.split(":");
-          const sessionId = parts.slice(0, -1).join(":");
-          const timerType = parts[parts.length - 1];
-          const taskType = timerType === "L2_schedule" ? "L2" : timerType === "L1_idle" ? "L1" : "L3";
-          const instanceId = this.config.instanceId ?? "default";
+          // Parse timer member by prefix: "offload-{type}:{instanceId}:{sessionId}[:{extra}]"
+          // or legacy "session:L2_schedule"
+          const member = entry.member;
+          let taskType: string;
+          let instanceId: string;
+          let sessionId: string;
+
+          const firstColon = member.indexOf(":");
+          const prefix = firstColon > 0 ? member.slice(0, firstColon) : member;
+
+          if (prefix === "offload-l1" || prefix === "offload-l15" || prefix === "offload-l2") {
+            taskType = prefix;
+            // Format: "offload-{type}:{instanceId}:{sessionId}[:{mmdFile}]"
+            // instanceId is the segment right after the prefix
+            const rest = member.slice(firstColon + 1);
+            const instanceEnd = rest.indexOf(":");
+            if (instanceEnd > 0) {
+              instanceId = rest.slice(0, instanceEnd);
+              sessionId = rest.slice(instanceEnd + 1);
+            } else {
+              instanceId = this.config.instanceId ?? "default";
+              sessionId = rest;
+            }
+            // For offload-l2: strip trailing ":{mmdFile}" from sessionId
+            // (mmdFile is extracted separately from timerMember in the executor)
+            if (prefix === "offload-l2" && sessionId.endsWith(".mmd")) {
+              const lastColon = sessionId.lastIndexOf(":");
+              if (lastColon > 0) {
+                sessionId = sessionId.slice(0, lastColon);
+              }
+            }
+          } else {
+            // Legacy format: "sessionId:L2_schedule" or "sessionId:L1_idle"
+            const lastColon = member.lastIndexOf(":");
+            const suffix = lastColon >= 0 ? member.slice(lastColon + 1) : "";
+            sessionId = lastColon >= 0 ? member.slice(0, lastColon) : member;
+            taskType = suffix === "L2_schedule" ? "offload-l2" : suffix === "L1_idle" ? "offload-l1" : "L3";
+            instanceId = this.config.instanceId ?? "default";
+          }
           const now = Date.now();
+          // Extract targetMmdFile from member for offload-l2 (needed by pipeline-worker lockKey)
+          let targetMmdFile: string | undefined;
+          if (taskType === "offload-l2") {
+            const mmdMatch = member.match(/(\d+-[^:]+\.mmd)$/);
+            if (mmdMatch) targetMmdFile = mmdMatch[1];
+          }
           const task = {
             id: `${taskType}-${sessionId}-${now}`,
-            type: taskType,
+            type: taskType as any,
             instanceId,
             sessionId,
             priority: 0,
             createdAt: now,
-            data: { triggeredBy: "timer_scanner", timerMember: entry.member, instanceId },
+            data: { triggeredBy: "timer_scanner", timerMember: member, instanceId, targetMmdFile },
           };
           this.stateBackend!.enqueueTask(task).then(() => {
-            this.logger.info(`[local-timer] Timer fired: ${entry.member} → enqueued ${taskType} task`);
+            this.logger.info(`[local-timer] Timer fired: ${member} → enqueued ${taskType} task`);
           }).catch((err) => {
-            this.logger.error(`[local-timer] Failed to enqueue task for ${entry.member}: ${err instanceof Error ? err.message : String(err)}`);
+            this.logger.error(`[local-timer] Failed to enqueue task for ${member}: ${err instanceof Error ? err.message : String(err)}`);
           });
         },
       } : undefined,
@@ -1570,6 +1642,120 @@ export class TdaiGateway {
       },
       async executeFlush(task: TaskPayload) {
         await core.handleSessionEnd(task.sessionId);
+      },
+
+      // ── Offload executors (L1 summary, L1.5 task judgment, L2 MMD update) ──
+      async executeOffloadL1(task: TaskPayload, signal?: AbortSignal) {
+        if (signal?.aborted) return;
+        const { OffloadTaskExecutor } = await import("../offload_server/offload-task-executor.js");
+        const storage = await resolveStorage(task);
+        if (!storage) return;
+        const llmClient = gateway.buildOffloadLlmClient();
+        if (!llmClient) {
+          gateway.logger.warn(`[executor] offload-l1 skipped: no LLM client available`);
+          return;
+        }
+        const executor = new OffloadTaskExecutor({
+          resolveStorage: async () => storage,
+          llmClient,
+          stateBackend: gateway.stateBackend!,
+          config: { ...gateway.config.offload, l1Model: "", l15Model: "", l2Model: "" },
+          logger: gateway.logger,
+        });
+        await executor.executeOffloadL1(task, signal);
+      },
+      async executeOffloadL15(task: TaskPayload, signal?: AbortSignal) {
+        if (signal?.aborted) return;
+        const { OffloadTaskExecutor } = await import("../offload_server/offload-task-executor.js");
+        const storage = await resolveStorage(task);
+        if (!storage) return;
+        const llmClient = gateway.buildOffloadLlmClient();
+        if (!llmClient) {
+          gateway.logger.warn(`[executor] offload-l15 skipped: no LLM client available`);
+          return;
+        }
+        const executor = new OffloadTaskExecutor({
+          resolveStorage: async () => storage,
+          llmClient,
+          stateBackend: gateway.stateBackend!,
+          config: { ...gateway.config.offload, l1Model: "", l15Model: "", l2Model: "" },
+          logger: gateway.logger,
+        });
+        await executor.executeOffloadL15(task, signal);
+      },
+      async executeOffloadL2(task: TaskPayload, signal?: AbortSignal) {
+        if (signal?.aborted) return;
+        const { OffloadTaskExecutor } = await import("../offload_server/offload-task-executor.js");
+        const storage = await resolveStorage(task);
+        if (!storage) return;
+        const llmClient = gateway.buildOffloadLlmClient();
+        if (!llmClient) {
+          gateway.logger.warn(`[executor] offload-l2 skipped: no LLM client available`);
+          return;
+        }
+        const executor = new OffloadTaskExecutor({
+          resolveStorage: async () => storage,
+          llmClient,
+          stateBackend: gateway.stateBackend!,
+          config: { ...gateway.config.offload, l1Model: "", l15Model: "", l2Model: "" },
+          logger: gateway.logger,
+        });
+        await executor.executeOffloadL2(task, signal);
+      },
+    };
+  }
+
+  /**
+   * Build a simple LLM client for offload executors using gateway's LLM config.
+   */
+  private buildOffloadLlmClient() {
+    const llmCfg = this.config.llm;
+    if (!llmCfg.baseUrl || !llmCfg.apiKey || !llmCfg.model) return null;
+    const logger = this.logger;
+
+    return {
+      async chat(params: {
+        model: string;
+        messages: Array<{ role: "system" | "user"; content: string }>;
+        temperature: number;
+        max_tokens: number;
+        timeoutMs?: number;
+      }): Promise<string> {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), params.timeoutMs ?? 30000);
+        try {
+          const response = await fetch(`${llmCfg.baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${llmCfg.apiKey}`,
+            },
+            body: JSON.stringify({
+              model: llmCfg.model || params.model,
+              messages: params.messages,
+              temperature: params.temperature,
+              max_tokens: params.max_tokens,
+            }),
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (!response.ok) {
+            throw new Error(`LLM API returned ${response.status}: ${await response.text()}`);
+          }
+          const json = (await response.json()) as any;
+          const finishReason = json.choices?.[0]?.finish_reason;
+          if (finishReason === "length") {
+            const content = json.choices?.[0]?.message?.content ?? "";
+            logger.warn(
+              `[offload-llm] Response truncated (finish_reason=length, max_tokens=${params.max_tokens}), ` +
+              `content=${content.length} chars`,
+            );
+          }
+          return json.choices?.[0]?.message?.content ?? "";
+        } catch (err) {
+          clearTimeout(timer);
+          throw err;
+        }
       },
     };
   }
