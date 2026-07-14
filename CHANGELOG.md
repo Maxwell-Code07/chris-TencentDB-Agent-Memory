@@ -4,6 +4,15 @@
 
 ---
 
+## [1.0.1] - 2026-07-13
+
+### 🐛 修复
+
+- **Gateway local L2 定时器未走场景提取** ([#227](https://github.com/Tencent/TencentDB-Agent-Memory/pull/227))：本地 timer 扫描将 L2 schedule 错路由到非 scene extraction 任务类型，导致 L2 场景提取定时触发失效。抽出 `timer-routing.ts`，按 timer member 前缀正确映射 `offload-l1` / `offload-l15` / `offload-l2` 与 `L1` / `L2` / `L3` 任务。
+- **升级 `cos-nodejs-sdk-v5` 至 3.0.0**：旧版 COS SDK 存在安全风险，升级从而修复该问题。
+
+---
+
 ## [1.0.0] - 2026-06-11
 
 > **正式版发布**：从 OpenClaw 专属插件演进为**面向所有 Agent 的通用记忆服务**。完整的 Gateway 独立服务 + v2 HTTP API + 官方 TypeScript / Python SDK，任何 Agent 框架均可接入完整的多层记忆与上下文压缩能力。
