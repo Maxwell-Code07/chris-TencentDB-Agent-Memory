@@ -15,11 +15,7 @@
 
 [Highlights](#-highlights) · [Overview](#overview) · [Core Technology](#core-technology-reject-flat-storage-embrace-layering-and-symbolization) · [Features](#-features) · [Quick Start](#quick-start)
 
-<div align="center">
 
-[**English**](./README.md) · [简体中文](./README_CN.md)
-
-</div>
 
 
 </div>
