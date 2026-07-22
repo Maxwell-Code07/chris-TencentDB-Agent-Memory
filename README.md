@@ -24,8 +24,9 @@
 
 > **Latest:** Team Memory Beta is evolving quickly — install it and start exploring in minutes.
 
-<video src="assets/videos/memoryhub_demo.mov" width="100%" controls autoplay loop muted playsinline></video>
-
+<td>
+   <video src="https://github.com/user-attachments/assets/efb1a808-1f86-4cfe-802c-f7453f7ca938" width="100%" controls autoplay loop muted playsinline></video>
+</td>
 
 # Installation
 
