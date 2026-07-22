@@ -1,0 +1,66 @@
+# panel-knowledge-combined 镜像上下文忽略清单
+#
+# build.sh 会把 panel/（team-memory-control）+ knowledge/（services/knowledge）
+# rsync 到临时 context 目录，本文件在此 context 里生效。
+# 目的：避免把敏感真值 / 内网信息 / 大文件打进镜像。
+
+# ── 真值配置：必须运行时挂载，不入镜像 ──
+# metadata-instances.json 含 tdai kernel Bearer token，见 panel README 部署段。
+panel/config/metadata-instances.json
+panel/config/*.yaml
+panel/config/*.yml
+panel/.env
+panel/.env.*
+knowledge/.env
+knowledge/.env.*
+
+# ── 文档：非 runtime 必需，且含内部路径引用 ──
+# panel 层：docs/ 全排除
+panel/docs/
+# knowledge 层：只保留 runtime 必需的 openapi.yaml，其它 md 全排除
+knowledge/docs/README.md
+knowledge/docs/architecture.md
+knowledge/docs/development.md
+knowledge/docs/deployment.md
+knowledge/docs/design/
+knowledge/docs/prd-*.md
+knowledge/docs/REFACTOR-*.md
+knowledge/docs/codegraph-*.md
+knowledge/docs/wiki-upload-*.md
+knowledge/docs/multi-service.md
+knowledge/docs/retrieval.md
+knowledge/docs/ingest-flow.md
+knowledge/docs/observation.md
+knowledge/docs/mcp/
+knowledge/docs/memory/
+knowledge/docs/api/endpoints.md
+knowledge/docs/api/wiki-search.md
+# 保留：knowledge/docs/api/openapi.yaml（src/server.ts:86 要读它给 Swagger UI）
+
+# ── 测试脚本：含内部环境硬编码路径，非 runtime 必需 ──
+panel/tests/
+panel/e2e-*.sh
+knowledge/__tests__/
+knowledge/bin/e2e-*.sh
+
+# ── 依赖 / 构建产物 ──
+**/node_modules
+**/dist
+**/build
+**/.git
+**/logs
+**/*.log
+**/data/
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.sqlite
+
+# ── 编辑器/OS 杂物 ──
+**/.DS_Store
+**/.idea/
+**/.vscode/
+**/*.swp
+**/*.swo
+**/.iwiki
+**/.codebuddy

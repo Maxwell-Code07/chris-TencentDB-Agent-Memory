@@ -1,0 +1,17 @@
+{
+  "_comment": "复制本文件为 metadata-instances.json 后按注释替换真值。真值文件已被 .gitignore 排除，禁止提交。api_key 是 tdai kernel gateway 的 bearer token，从 kernel 侧获取。",
+  "instances": [
+    {
+      "id": "default",
+      "name": "本地默认实例",
+      "gateway_endpoint": "http://127.0.0.1:8420",
+      "api_key": "REPLACE_WITH_KERNEL_BEARER_TOKEN"
+    },
+    {
+      "id": "e2e-test",
+      "name": "E2E 自动化测试专用（可随时清库）",
+      "gateway_endpoint": "http://127.0.0.1:8420",
+      "api_key": "REPLACE_WITH_KERNEL_BEARER_TOKEN"
+    }
+  ]
+}
